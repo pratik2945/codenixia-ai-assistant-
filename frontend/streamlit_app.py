@@ -17,6 +17,19 @@ if str(ROOT) not in sys.path:
 
 load_dotenv(ROOT / ".env")
 
+
+def _apply_streamlit_secrets():
+    """Streamlit Cloud stores keys in st.secrets — copy into os.environ."""
+    try:
+        for key, value in st.secrets.items():
+            if isinstance(value, str) and value:
+                os.environ.setdefault(key, value)
+    except Exception:
+        pass
+
+
+_apply_streamlit_secrets()
+
 # Optional: set USE_EXTERNAL_API=true and API_BASE_URL=https://your-api.onrender.com
 USE_EXTERNAL_API = os.getenv("USE_EXTERNAL_API", "false").lower() in ("1", "true", "yes")
 API_BASE = os.getenv("API_BASE_URL", "").rstrip("/")
@@ -41,10 +54,15 @@ def _get(path: str):
     from app.services.lead_service import get_dashboard_stats
 
     if path == "/health":
+        from app.services.chat_service import get_last_llm_error
+
+        has_key = settings.has_llm_key
         return {
             "status": "healthy",
             "llm_provider": settings.llm_provider,
             "email_automation": settings.email_enabled,
+            "llm_configured": has_key,
+            "llm_error": get_last_llm_error(),
         }
     if path == "/api/leads":
         return get_all_leads()
@@ -139,9 +157,15 @@ with st.sidebar:
     st.divider()
     health = api_get("/health")
     if health:
-        st.success("Connected")
-        st.caption(f"LLM: {health.get('llm_provider', 'N/A')}")
-        st.caption(f"Email: {'✅' if health.get('email_automation') else '⏭️ Skipped'}")
+        st.success("App connected")
+        if not health.get("llm_configured"):
+            st.warning("No API key — add GEMINI_API_KEY in `.env` or Streamlit Secrets")
+        elif health.get("llm_error"):
+            st.warning("API key invalid or expired — create a new key at aistudio.google.com")
+            st.caption(health.get("llm_error", "")[:80])
+        else:
+            st.caption(f"AI: {health.get('llm_provider', 'N/A')} active")
+        st.caption(f"Email: {'on' if health.get('email_automation') else 'off'}")
 
 if page == "💬 AI Chatbot":
     st.markdown('<p class="main-header">AI Business Assistant</p>', unsafe_allow_html=True)
@@ -175,6 +199,11 @@ if page == "💬 AI Chatbot":
                 provider = result.get("provider", "unknown")
                 st.write(reply)
                 st.caption(f"Powered by: {provider}")
+                if provider == "fallback":
+                    st.info(
+                        "Using built-in answers. For full AI replies, set a valid **GEMINI_API_KEY** "
+                        "in `.env` (local) or Streamlit Secrets (cloud), then restart."
+                    )
                 st.session_state.messages.append({"role": "assistant", "content": reply})
 
     if st.button("Clear Chat"):
