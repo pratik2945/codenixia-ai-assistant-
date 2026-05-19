@@ -1,14 +1,114 @@
+"""
+Codenixia AI Business Assistant — Streamlit UI
+Uses built-in Python backend directly (no separate FastAPI server required).
+"""
 import os
+import sys
 import uuid
+from pathlib import Path
 
 import pandas as pd
-import requests
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv()
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
+load_dotenv(ROOT / ".env")
+
+# Optional: set USE_EXTERNAL_API=true and API_BASE_URL=https://your-api.onrender.com
+USE_EXTERNAL_API = os.getenv("USE_EXTERNAL_API", "false").lower() in ("1", "true", "yes")
+API_BASE = os.getenv("API_BASE_URL", "").rstrip("/")
+
+_backend_ready = False
+
+
+@st.cache_resource
+def _init_backend():
+    from app.database import init_db
+
+    init_db()
+    return True
+
+
+_init_backend()
+
+
+def _get(path: str):
+    from app.config import settings
+    from app.database import export_leads_csv, get_all_leads, get_automation_logs, get_chat_logs
+    from app.services.lead_service import get_dashboard_stats
+
+    if path == "/health":
+        return {
+            "status": "healthy",
+            "llm_provider": settings.llm_provider,
+            "email_automation": settings.email_enabled,
+        }
+    if path == "/api/leads":
+        return get_all_leads()
+    if path.startswith("/api/leads/export"):
+        p = export_leads_csv()
+        return {"success": True, "path": str(p)}
+    if path.startswith("/api/chat/logs"):
+        limit = 50
+        if "limit=" in path:
+            limit = int(path.split("limit=")[1])
+        return get_chat_logs(limit=limit)
+    if path.startswith("/api/automation/logs"):
+        limit = 50
+        if "limit=" in path:
+            limit = int(path.split("limit=")[1])
+        return get_automation_logs(limit=limit)
+    if path == "/api/dashboard/stats":
+        return get_dashboard_stats()
+    return None
+
+
+def _post(path: str, data: dict):
+    from app.services.lead_service import handle_chat, submit_lead
+
+    if path == "/api/chat":
+        return handle_chat(data["message"], data.get("session_id", "default"))
+    if path == "/api/leads":
+        result = submit_lead(
+            name=data["name"],
+            email=data["email"],
+            phone=data.get("phone"),
+            company=data.get("company"),
+            message=data.get("message"),
+            source=data.get("source", "web_form"),
+        )
+        return {"success": True, **result}
+    return None
+
+
+def api_get(path: str):
+    if USE_EXTERNAL_API and API_BASE:
+        import requests
+
+        try:
+            r = requests.get(f"{API_BASE}{path}", timeout=15)
+            r.raise_for_status()
+            return r.json()
+        except Exception as exc:
+            st.warning(f"External API unavailable, using built-in backend. ({exc})")
+    return _get(path)
+
+
+def api_post(path: str, data: dict):
+    if USE_EXTERNAL_API and API_BASE:
+        import requests
+
+        try:
+            r = requests.post(f"{API_BASE}{path}", json=data, timeout=30)
+            r.raise_for_status()
+            return r.json()
+        except Exception as exc:
+            st.warning(f"External API unavailable, using built-in backend. ({exc})")
+    return _post(path, data)
+
 
 st.set_page_config(
     page_title="Codenixia AI Assistant",
@@ -27,27 +127,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-def api_get(endpoint: str):
-    try:
-        resp = requests.get(f"{API_BASE}{endpoint}", timeout=10)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.RequestException as exc:
-        st.error(f"API Error: {exc}")
-        return None
-
-
-def api_post(endpoint: str, data: dict):
-    try:
-        resp = requests.post(f"{API_BASE}{endpoint}", json=data, timeout=30)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.RequestException as exc:
-        st.error(f"API Error: {exc}")
-        return None
-
-
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/artificial-intelligence.png", width=64)
     st.title("Codenixia AI")
@@ -60,7 +139,7 @@ with st.sidebar:
     st.divider()
     health = api_get("/health")
     if health:
-        st.success("API Connected")
+        st.success("Connected")
         st.caption(f"LLM: {health.get('llm_provider', 'N/A')}")
         st.caption(f"Email: {'✅' if health.get('email_automation') else '⏭️ Skipped'}")
 
@@ -141,7 +220,7 @@ elif page == "📋 Lead Capture":
                 if result and result.get("success"):
                     st.success(f"Thank you, {name}! Your details have been submitted (Lead #{result.get('lead_id')}).")
                     st.info(
-                        f"Automation: CSV exported ✅ | Email notification: {result.get('email_status', 'N/A')}"
+                        f"Automation: CSV exported | Email: {result.get('email_status', 'N/A')}"
                     )
 
 elif page == "📊 Admin Dashboard":
