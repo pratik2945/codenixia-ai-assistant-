@@ -2,13 +2,22 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Always load .env from project root (works when Streamlit runs from any folder)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_FILE = PROJECT_ROOT / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_FILE),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     llm_provider: str = "gemini"
     gemini_api_key: str = ""
     openai_api_key: str = ""
+    groq_api_key: str = ""
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
     smtp_user: str = ""
@@ -23,6 +32,14 @@ class Settings(BaseSettings):
     @property
     def email_enabled(self) -> bool:
         return bool(self.smtp_user and self.smtp_password and self.notify_email)
+
+    @property
+    def has_llm_key(self) -> bool:
+        if self.llm_provider.lower() == "openai":
+            return bool(self.openai_api_key.strip())
+        if self.llm_provider.lower() == "groq":
+            return bool(self.groq_api_key.strip())
+        return bool(self.gemini_api_key.strip())
 
 
 settings = Settings()
